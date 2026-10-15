@@ -1,0 +1,934 @@
+<!doctype html>
+<!--
+  SAR Log Viewer: offline, single-file visualizer for Linux sysstat `sar` text reports.
+  Source: https://github.com/roldan-pr/sysadmin_tools
+  All parsing happens locally in the browser. The Content-Security-Policy below blocks every
+  network request, so loaded log data cannot leave the machine.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SAR Log Viewer</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --text: #0b0b0b; --text2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --accent: #2a78d6;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+  --heat: #eef4fc,#cde2fb,#86b6ef,#3987e5,#1c5cab,#0d366b;
+  --sel: rgba(42,120,214,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --text: #f0efec; --text2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --accent: #3987e5;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+    --heat: #22272e,#184f95,#2a78d6,#5598e7,#9ec5f4,#e3eefc;
+    --sel: rgba(57,135,229,0.18);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --text: #f0efec; --text2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --accent: #3987e5;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  --heat: #22272e,#184f95,#2a78d6,#5598e7,#9ec5f4,#e3eefc;
+  --sel: rgba(57,135,229,0.18);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--page); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { position: sticky; top: 0; z-index: 10; background: var(--page); border-bottom: 1px solid var(--border); padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+header h1 { font-size: 16px; margin: 0 8px 0 0; font-weight: 650; }
+button, select, input[type=text] { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; }
+button { cursor: pointer; }
+button:hover { border-color: var(--axis); }
+button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.seg { display: inline-flex; }
+.seg button { border-radius: 0; }
+.seg button:first-child { border-radius: 6px 0 0 6px; }
+.seg button:last-child { border-radius: 0 6px 6px 0; }
+.meta { color: var(--text2); font-size: 12px; }
+.spacer { flex: 1; }
+a.src { color: var(--text2); font-size: 12px; text-decoration: none; }
+a.src:hover { color: var(--accent); text-decoration: underline; }
+main { padding: 16px; max-width: 1800px; margin: 0 auto; }
+#drop { border: 2px dashed var(--axis); border-radius: 12px; padding: 48px 16px; text-align: center; color: var(--text2); background: var(--surface); }
+#drop.over { border-color: var(--accent); background: var(--sel); }
+#drop h2 { color: var(--text); margin: 0 0 8px; font-size: 18px; }
+#drop code { background: var(--page); padding: 1px 5px; border-radius: 4px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.tile .k { color: var(--text2); font-size: 12px; }
+.tile .v { font-size: 24px; font-weight: 600; margin: 2px 0; }
+.tile .s { color: var(--muted); font-size: 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 12px 6px; min-width: 0; }
+.card.wide { grid-column: 1 / -1; }
+.card .hd { display: flex; align-items: baseline; gap: 8px; margin: 0 4px 6px; }
+.card h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.card .unit { color: var(--muted); font-size: 12px; }
+.card .hd button { margin-left: auto; padding: 2px 8px; font-size: 12px; color: var(--text2); }
+.plot { width: 100%; }
+.stage { position: relative; width: 100%; }
+.stage canvas { position: absolute; left: 0; top: 0; }
+.stage canvas + canvas { cursor: crosshair; }
+.legend { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 12px; color: var(--text2); margin: 6px 4px 4px; min-height: 18px; }
+.legend .lt { color: var(--text); font-variant-numeric: tabular-nums; min-width: 9.5em; }
+.legend .li { cursor: pointer; user-select: none; white-space: nowrap; }
+.legend .li.off { opacity: .4; }
+.legend .li b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.tip td { padding: 0 4px; font-variant-numeric: tabular-nums; }
+.tip td:last-child { text-align: right; font-weight: 600; }
+.heat { position: relative; width: 100%; }
+.heat canvas { display: block; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 12px; color: var(--text); box-shadow: 0 2px 8px rgba(0,0,0,.15); white-space: nowrap; display: none; }
+.scale { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; margin: 6px 4px; }
+.scale i { display: inline-block; width: 160px; height: 8px; border-radius: 2px; }
+.explorer { display: grid; grid-template-columns: 280px 1fr; gap: 16px; align-items: start; }
+@media (max-width: 800px) { .explorer { grid-template-columns: 1fr; } }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.panel label { font-size: 12px; color: var(--text2); }
+.panel select, .panel input[type=text] { width: 100%; }
+.insts input { margin: 0; }
+.insts { max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; }
+.insts label { display: flex; gap: 6px; align-items: center; color: var(--text); font-size: 13px; padding: 1px 0; }
+.insts label.dis { color: var(--muted); }
+.row { display: flex; gap: 6px; flex-wrap: wrap; }
+table.stats { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; font-variant-numeric: tabular-nums; }
+table.stats th, table.stats td { text-align: right; padding: 4px 8px; border-top: 1px solid var(--grid); }
+table.stats th { color: var(--text2); font-weight: 500; }
+table.stats td:first-child, table.stats th:first-child { text-align: left; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SAR Log Viewer</h1>
+  <button id="btnFiles">Open files…</button>
+  <button id="btnDir">Open folder…</button>
+  <input id="inFiles" type="file" multiple class="hidden">
+  <input id="inDir" type="file" webkitdirectory multiple class="hidden">
+  <span class="seg needs-data hidden"><button id="vDash" class="on">Dashboard</button><button id="vExp">Explorer</button></span>
+  <select id="hostSel" class="needs-data hidden" title="Host"></select>
+  <select id="daySel" class="needs-data hidden" title="Time range"></select>
+  <button id="btnReset" class="needs-data hidden" title="Reset zoom (or double-click a chart)">Reset zoom</button>
+  <span class="spacer"></span>
+  <span id="status" class="meta"></span>
+  <a class="src" href="https://github.com/roldan-pr/sysadmin_tools" target="_blank" rel="noopener noreferrer" title="Source code">Source</a>
+  <button id="btnTheme" title="Theme">Theme: auto</button>
+  <button id="btnClear" class="needs-data hidden">Clear</button>
+</header>
+<main>
+  <div id="drop">
+    <h2>Drop sar text reports here</h2>
+    <div>Or use <b>Open files…</b> / <b>Open folder…</b>. Files are parsed locally in your browser.</div>
+    <p class="note">Expects text output such as <code>sar -A -f /var/log/sa/sa01 &gt; sar01</code> (the <code>sarNN</code> files).
+      Binary <code>saNN</code> files are skipped. Convert them with <code>sar -A -f saNN</code> first.</p>
+  </div>
+  <div id="dash" class="hidden"></div>
+  <div id="exp" class="hidden"></div>
+</main>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// Quote CSV cells and neutralise spreadsheet formula injection (=, +, -, @ prefixes from log-derived labels).
+const csvCell = v => { let s = String(v); if (/^[=+\-@\t\r]/.test(s) && !isNum(s)) s = "'" + s; return /[",\n\r]/.test(s) || s !== String(v) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+
+const STORE = { hosts: {} };
+let H = null, view = 'dash', range = null, plots = [], heats = [];
+const exp = { sig: null, col: null, sel: new Set(), filter: '' };
+
+/* ---------------- parsing ---------------- */
+const isNum = s => /^[-+]?(\d+([.,]\d*)?|[.,]\d+)([eE][-+]?\d+)?$/.test(s);
+const num = s => parseFloat(s.replace(',', '.'));
+
+function parseDate(s) {
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return Date.UTC(+m[1], m[2] - 1, +m[3]) / 1000;
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (m) { let y = +m[3]; if (y < 100) y += 2000; return Date.UTC(y, m[1] - 1, +m[2]) / 1000; }
+  m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
+  if (m) { let y = +m[3]; if (y < 100) y += 2000; return Date.UTC(y, m[2] - 1, +m[1]) / 1000; }
+  return null;
+}
+
+const NAMES = [
+  [c => c[0] === 'CPU' && (c.includes('%usr') || c.includes('%user')), 'CPU utilization'],
+  [c => c[0] === 'CPU' && c.includes('total/s'), 'Softnet (per CPU)'],
+  [c => c[0] === 'CPU' && c.includes('MHz'), 'CPU frequency'],
+  [c => c[0] === 'INTR', 'Interrupts'],
+  [c => c.includes('proc/s'), 'Processes & context switches'],
+  [c => c.includes('pswpin/s'), 'Swapping activity'],
+  [c => c.includes('pgpgin/s'), 'Paging'],
+  [c => c[0] === 'tps', 'I/O transfer rates'],
+  [c => c.includes('kbmemfree'), 'Memory'],
+  [c => c.includes('kbswpfree'), 'Swap space'],
+  [c => c.includes('kbhugfree'), 'Huge pages'],
+  [c => c.includes('dentunusd'), 'Kernel tables'],
+  [c => c.includes('runq-sz'), 'Run queue & load average'],
+  [c => c[0] === 'TTY', 'Serial lines'],
+  [c => c[0] === 'DEV', 'Block devices'],
+  [c => c[0] === 'IFACE' && c.includes('rxpck/s'), 'Network interfaces'],
+  [c => c[0] === 'IFACE' && c.includes('rxerr/s'), 'Network errors'],
+  [c => c.includes('call/s'), 'NFS client'],
+  [c => c.includes('scall/s'), 'NFS server'],
+  [c => c.includes('totsck'), 'Sockets'],
+  [c => c.includes('tcp6sck'), 'IPv6 sockets'],
+  [c => c.includes('irec/s'), 'IPv4 traffic'],
+  [c => c.includes('ihdrerr/s'), 'IPv4 errors'],
+  [c => c.includes('imsg/s'), 'ICMPv4'],
+  [c => c.includes('ierr/s') && c.includes('oerr/s') && c.length > 8, 'ICMPv4 errors'],
+  [c => c.includes('active/s'), 'TCPv4'],
+  [c => c.includes('atmptf/s'), 'TCPv4 errors'],
+  [c => c.includes('idgm/s'), 'UDPv4'],
+  [c => c.includes('irec6/s'), 'IPv6 traffic'],
+  [c => c.includes('idgm6/s'), 'UDPv6'],
+  [c => c.includes('%scpu-10'), 'CPU pressure'],
+  [c => c.includes('%sio-10'), 'I/O pressure'],
+  [c => c.includes('%smem-10'), 'Memory pressure'],
+  [c => c[0] === 'FILESYSTEM' || c[0] === 'MOUNTPOINT', 'Filesystems'],
+];
+
+function newSection(h, cols) {
+  const sig = cols.join(' ');
+  const keyed = /^[A-Z][A-Z0-9_-]*$/.test(cols[0]);
+  const hit = NAMES.find(([p]) => p(cols));
+  let name = hit ? hit[1] : cols.slice(0, 4).join(' ') + (cols.length > 4 ? ' …' : '');
+  const taken = new Set(Object.values(h.sections).map(s => s.name));
+  if (taken.has(name)) { let i = 2; while (taken.has(name + ' (' + i + ')')) i++; name += ' (' + i + ')'; }
+  return h.sections[sig] = { sig, name, cols, keyed, keyName: keyed ? cols[0] : null, vcols: keyed ? cols.slice(1) : cols, inst: new Map() };
+}
+
+function parseText(text) {
+  const lines = text.split(/\r?\n/);
+  const m = lines[0].match(/^Linux\s+(\S+)\s+\(([^)]+)\)\s+(\S+)\s+(?:(\S+)\s+)?\((\d+) CPU\)/);
+  if (!m) return false;
+  const base = parseDate(m[3]);
+  if (base == null) return false;
+  const host = m[2];
+  const h = STORE.hosts[host] || (STORE.hosts[host] = { host, kernel: m[1], arch: m[4] || '', cpus: +m[5], sections: {}, days: new Set(), restarts: [] });
+  h.days.add(base);
+  let cur = null;
+  const lastT = {}, dayOff = {};
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || !line.trim()) { cur = null; continue; }
+    const c0 = line.charCodeAt(0);
+    if (c0 < 48 || c0 > 57) { cur = null; continue; } // Average:, Summary, etc.
+    let tok = line.trim().split(/\s+/);
+    const tm = tok[0].match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
+    if (!tm) continue;
+    let secs = +tm[1] * 3600 + +tm[2] * 60 + +tm[3];
+    let rest = tok.slice(1);
+    if (rest[0] === 'AM' || rest[0] === 'PM') {
+      if (rest[0] === 'PM' && +tm[1] < 12) secs += 43200;
+      if (rest[0] === 'AM' && +tm[1] === 12) secs -= 43200;
+      rest = rest.slice(1);
+    }
+    if (rest[0] === 'LINUX' && rest[1] === 'RESTART') { h.restarts.push(base + secs); cur = null; continue; }
+    if (!rest.length) continue;
+    if (!isNum(rest[rest.length - 1])) { // header row
+      const sig = rest.join(' ');
+      cur = h.sections[sig] || newSection(h, rest);
+      continue;
+    }
+    if (!cur || rest.length !== cur.cols.length) continue;
+    const k = cur.sig;
+    if (lastT[k] != null && secs < lastT[k] - 43200) dayOff[k] = (dayOff[k] || 0) + 1;
+    lastT[k] = secs;
+    const t = base + (dayOff[k] || 0) * 86400 + secs;
+    const inst = cur.keyed ? rest[0] : '';
+    const vals = cur.keyed ? rest.slice(1) : rest;
+    let s = cur.inst.get(inst);
+    if (!s) { s = { t: [], v: cur.vcols.map(() => []) }; cur.inst.set(inst, s); }
+    s.t.push(t);
+    for (let j = 0; j < vals.length; j++) s.v[j].push(num(vals[j]));
+  }
+  return true;
+}
+
+function finalize() {
+  for (const h of Object.values(STORE.hosts)) {
+    let tmin = Infinity, tmax = -Infinity;
+    for (const sec of Object.values(h.sections)) {
+      for (const [k, s] of sec.inst) {
+        const idx = s.t.map((_, i) => i).sort((a, b) => s.t[a] - s.t[b] || a - b);
+        const keep = [];
+        for (let i = 0; i < idx.length; i++) {
+          if (i + 1 < idx.length && s.t[idx[i + 1]] === s.t[idx[i]]) continue; // dedupe, keep last
+          keep.push(idx[i]);
+        }
+        s.t = keep.map(i => s.t[i]);
+        s.v = s.v.map(a => keep.map(i => a[i]));
+        if (s.t.length) { tmin = Math.min(tmin, s.t[0]); tmax = Math.max(tmax, s.t[s.t.length - 1]); }
+      }
+    }
+    h.tmin = tmin; h.tmax = tmax;
+  }
+}
+
+/* ---------------- helpers ---------------- */
+const natural = (a, b) => a === 'all' ? -1 : b === 'all' ? 1 : a.localeCompare(b, undefined, { numeric: true });
+const sec = (h, pred) => Object.values(h.sections).find(s => pred(s.cols));
+function ser(section, s, col, label, f) {
+  const ci = section.vcols.indexOf(col);
+  if (!s || ci < 0) return null;
+  return { label: label || col, t: s.t, v: f ? s.v[ci].map(f) : s.v[ci] };
+}
+function sumSer(section, s, cols, label, f) {
+  const idx = cols.map(c => section.vcols.indexOf(c));
+  if (!s || idx.some(i => i < 0)) return null;
+  return { label, t: s.t, v: s.t.map((_, i) => { const x = idx.reduce((a, ci) => a + s.v[ci][i], 0); return f ? f(x) : x; }) };
+}
+function topInst(section, col, n, by = 'max', exclude = []) {
+  const ci = section.vcols.indexOf(col);
+  if (ci < 0) return [];
+  const sc = [];
+  for (const [k, s] of section.inst) {
+    if (exclude.includes(k)) continue;
+    const a = s.v[ci];
+    const m = by === 'mean' ? a.reduce((x, y) => x + y, 0) / (a.length || 1) : Math.max(...a);
+    if (m > 0) sc.push([k, m]);
+  }
+  return sc.sort((a, b) => b[1] - a[1]).slice(0, n).map(x => x[0]);
+}
+function medInterval(t) {
+  const d = [];
+  for (let i = 1; i < t.length; i++) d.push(t[i] - t[i - 1]);
+  d.sort((a, b) => a - b);
+  return d.length ? d[d.length >> 1] : 600;
+}
+function align(list) {
+  const set = new Set();
+  list.forEach(s => s.t.forEach(x => set.add(x)));
+  const ts = [...set].sort((a, b) => a - b);
+  const med = medInterval(ts);
+  const out = [];
+  for (let i = 0; i < ts.length; i++) { if (i && ts[i] - ts[i - 1] > med * 3) out.push(ts[i - 1] + med); out.push(ts[i]); }
+  const idx = new Map(out.map((x, i) => [x, i]));
+  const data = [out];
+  for (const s of list) { const a = new Array(out.length).fill(null); for (let i = 0; i < s.t.length; i++) a[idx.get(s.t[i])] = s.v[i]; data.push(a); }
+  return data;
+}
+function stats(t, v, a, b) {
+  let n = 0, sum = 0, mx = -Infinity, mn = Infinity, tm = null; const arr = [];
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] < a || t[i] > b || v[i] == null) continue;
+    const x = v[i]; n++; sum += x; arr.push(x);
+    if (x > mx) { mx = x; tm = t[i]; }
+    if (x < mn) mn = x;
+  }
+  if (!n) return null;
+  arr.sort((x, y) => x - y);
+  return { n, avg: sum / n, max: mx, min: mn, tmax: tm, p95: arr[Math.min(n - 1, Math.floor(n * 0.95))] };
+}
+function fmtNum(v) {
+  if (v == null || !isFinite(v)) return '—';
+  const a = Math.abs(v);
+  if (a >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  if (a >= 100) return v.toFixed(1);
+  return v.toFixed(2);
+}
+function fmtAxis(v) {
+  const a = Math.abs(v);
+  if (a >= 1e9) return +(v / 1e9).toFixed(1) + 'G';
+  if (a >= 1e6) return +(v / 1e6).toFixed(1) + 'M';
+  if (a >= 1e4) return +(v / 1e3).toFixed(1) + 'k';
+  return +v.toFixed(2) + '';
+}
+const fmtTime = ts => new Date(ts * 1000).toISOString().slice(0, 19).replace('T', ' ');
+const fmtDay = ts => new Date(ts * 1000).toISOString().slice(0, 10);
+const curRange = () => range || [H.tmin, H.tmax];
+
+function colors() {
+  const cs = getComputedStyle(document.documentElement);
+  const g = n => cs.getPropertyValue(n).trim();
+  return { series: [1, 2, 3, 4, 5, 6, 7, 8].map(i => g('--s' + i)), surface: g('--surface'), muted: g('--muted'), grid: g('--grid'), axis: g('--axis'), text: g('--text'), text2: g('--text2'), heat: g('--heat').split(',').map(x => x.trim()) };
+}
+
+/* ---------------- charts ---------------- */
+const ro = new ResizeObserver(entries => {
+  for (const e of entries) {
+    const f = e.target._onResize;
+    if (f) f(Math.floor(e.contentRect.width));
+  }
+});
+
+function downloadCSV(name, labels, data) {
+  const rows = [['time', ...labels].map(csvCell).join(',')];
+  for (let i = 0; i < data[0].length; i++) {
+    if (data.slice(1).every(a => a[i] == null)) continue;
+    rows.push([fmtTime(data[0][i]), ...data.slice(1).map(a => a[i] == null ? '' : a[i])].map(csvCell).join(','));
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([rows.join('\n')], { type: 'text/csv' }));
+  a.download = name.replace(/[^\w.-]+/g, '_') + '.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function plotCard(container, def) {
+  const list = def.series.filter(Boolean);
+  if (!list.length) return null;
+  const card = el('section', 'card' + (def.wide ? ' wide' : ''));
+  const hd = el('div', 'hd', `<h3>${esc(def.title)}</h3><span class="unit">${esc(def.unit || '')}</span>`);
+  const csv = el('button', null, 'CSV');
+  hd.append(csv);
+  const body = el('div', 'plot');
+  card.append(hd, body);
+  container.append(card);
+  const data = align(list);
+  csv.onclick = () => downloadCSV(def.title, list.map(s => s.label), data);
+  const chart = lineChart(body, def, data, list, colors());
+  plots.push(chart);
+  return { chart, data, list };
+}
+
+/* Self-contained canvas line chart: time x-axis (UTC wall time), synced crosshair, drag-to-zoom. */
+const TSTEPS = [60, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 604800, 1209600];
+function niceStep(span, n) {
+  const raw = span / n, p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
+}
+function syncCursor(t, src) { plots.forEach(p => p.cursor(t, p === src)); }
+
+function lineChart(body, def, data, list, C) {
+  const height = def.height || 230, PL = 52, PR = 10, PT = 8, PB = 22;
+  const stage = el('div', 'stage');
+  stage.style.height = height + 'px';
+  const base = el('canvas'), over = el('canvas'), tip = el('div', 'tip');
+  stage.append(base, over, tip);
+  const legend = el('div', 'legend');
+  body.append(stage, legend);
+  const ts = data[0], hidden = new Set();
+  let W = 0, a = 0, b = 1, ymin = 0, ymax = 1, ystep = 1, hover = null, drag = null, mouse = null;
+  const legT = el('span', 'lt');
+  legend.append(legT);
+  const legV = list.map((s, i) => {
+    const it = el('span', 'li', `<span class="sw" style="background:${C.series[i % 8]}"></span>${esc(s.label)} <b></b>`);
+    it.onclick = () => { hidden.has(i) ? hidden.delete(i) : hidden.add(i); it.classList.toggle('off', hidden.has(i)); drawBase(); drawOver(); };
+    legend.append(it);
+    return it.querySelector('b');
+  });
+  const pw = () => W - PL - PR, ph = height - PT - PB;
+  const X = t => PL + (t - a) / (b - a) * pw();
+  const Y = v => PT + (1 - (v - ymin) / (ymax - ymin)) * ph;
+  const T = x => a + (x - PL) / pw() * (b - a);
+  const lo = t => { let l = 0, h = ts.length; while (l < h) { const m = (l + h) >> 1; if (ts[m] < t) l = m + 1; else h = m; } return l; };
+
+  function size() {
+    W = stage.clientWidth;
+    const dpr = window.devicePixelRatio || 1;
+    for (const c of [base, over]) {
+      c.width = W * dpr; c.height = height * dpr; c.style.width = W + 'px'; c.style.height = height + 'px';
+      c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+  }
+  function yscale(i0, i1) {
+    let mn = Infinity, mx = -Infinity;
+    for (let j = 0; j < list.length; j++) {
+      if (hidden.has(j)) continue;
+      const d = data[j + 1];
+      for (let i = i0; i <= i1; i++) { const v = d[i]; if (v != null) { if (v < mn) mn = v; if (v > mx) mx = v; } }
+    }
+    if (!isFinite(mx)) { mn = 0; mx = 1; }
+    if (def.y) mn = Math.min(0, mn);
+    if (mx <= mn) mx = mn + 1;
+    mx += (mx - mn) * 0.06;
+    ystep = niceStep(mx - mn, 4);
+    ymin = Math.floor(mn / ystep) * ystep;
+    ymax = Math.ceil(mx / ystep) * ystep;
+    if (def.y === 'pct' && ymax > 100 && mx <= 100 * 1.06 + 1e-9) { ymax = 100; ystep = niceStep(100 - ymin, 4); }
+  }
+  function drawBase() {
+    if (!W) return;
+    const g = base.getContext('2d');
+    g.clearRect(0, 0, W, height);
+    const i0 = Math.max(0, lo(a) - 1), i1 = Math.min(ts.length - 1, lo(b));
+    yscale(i0, i1);
+    g.font = '11px system-ui, sans-serif';
+    g.lineWidth = 1;
+    g.fillStyle = C.muted; g.textAlign = 'right'; g.textBaseline = 'middle';
+    for (let v = ymin; v <= ymax + ystep * 1e-6; v += ystep) {
+      const y = Math.round(Y(v)) + 0.5;
+      g.strokeStyle = v === ymin ? C.axis : C.grid;
+      g.beginPath(); g.moveTo(PL, y); g.lineTo(W - PR, y); g.stroke();
+      g.fillText(fmtAxis(v), PL - 6, y);
+    }
+    const span = b - a, maxTicks = Math.max(2, pw() / 90);
+    const step = TSTEPS.find(s => span / s <= maxTicks) || TSTEPS[TSTEPS.length - 1];
+    g.textAlign = 'center'; g.textBaseline = 'top';
+    for (let t = Math.ceil(a / step) * step; t <= b; t += step) {
+      const x = Math.round(X(t)) + 0.5, s = fmtTime(t);
+      g.strokeStyle = C.grid; g.beginPath(); g.moveTo(x, PT); g.lineTo(x, PT + ph); g.stroke();
+      const lab = step >= 86400 || t % 86400 === 0 ? s.slice(5, 10) : s.slice(11, 16);
+      g.fillText(lab, Math.min(W - PR - 14, Math.max(PL + 14, x)), PT + ph + 5);
+    }
+    g.save();
+    g.beginPath(); g.rect(PL, PT - 2, pw(), ph + 4); g.clip();
+    g.lineWidth = 2; g.lineJoin = 'round'; g.lineCap = 'round';
+    for (let j = 0; j < list.length; j++) {
+      if (hidden.has(j)) continue;
+      const d = data[j + 1];
+      g.strokeStyle = C.series[j % 8];
+      g.beginPath();
+      let pen = false;
+      for (let i = i0; i <= i1; i++) {
+        const v = d[i];
+        if (v == null) { pen = false; continue; }
+        const x = X(ts[i]), y = Y(v);
+        if (pen) g.lineTo(x, y); else { g.moveTo(x, y); if (d[i + 1] == null) g.lineTo(x + 0.5, y); }
+        pen = true;
+      }
+      g.stroke();
+    }
+    g.restore();
+  }
+  function drawOver() {
+    if (!W) return;
+    const g = over.getContext('2d');
+    g.clearRect(0, 0, W, height);
+    if (drag && Math.abs(drag.x1 - drag.x0) > 1) {
+      g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--sel');
+      g.fillRect(Math.min(drag.x0, drag.x1), PT, Math.abs(drag.x1 - drag.x0), ph);
+    }
+    legT.textContent = hover != null ? fmtTime(ts[hover]) : '';
+    list.forEach((s, j) => { legV[j].textContent = hover != null ? fmtNum(data[j + 1][hover]) : ''; });
+    if (hover == null) return;
+    const x = Math.round(X(ts[hover])) + 0.5;
+    g.strokeStyle = C.axis; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(x, PT); g.lineTo(x, PT + ph); g.stroke();
+    for (let j = 0; j < list.length; j++) {
+      const v = data[j + 1][hover];
+      if (hidden.has(j) || v == null) continue;
+      g.beginPath(); g.arc(x, Y(v), 4, 0, Math.PI * 2);
+      g.fillStyle = C.series[j % 8]; g.fill();
+      g.lineWidth = 2; g.strokeStyle = C.surface; g.stroke();
+    }
+  }
+  function cursor(t, own) {
+    hover = null;
+    if (t != null && t >= a && t <= b && ts.length) {
+      let i = Math.min(ts.length - 1, lo(t));
+      if (i > 0 && t - ts[i - 1] < ts[i] - t) i--;
+      if (data.slice(1).some(d => d[i] != null)) hover = i;
+    }
+    drawOver();
+    if (own && hover != null && mouse) {
+      const rows = list.map((s, j) => hidden.has(j) || data[j + 1][hover] == null ? '' :
+        `<tr><td><span class="sw" style="background:${C.series[j % 8]}"></span>${esc(s.label)}</td><td>${fmtNum(data[j + 1][hover])}</td></tr>`).join('');
+      tip.innerHTML = `<b>${fmtTime(ts[hover])}</b><table>${rows}</table>`;
+      tip.style.display = 'block';
+      const tw = tip.offsetWidth, th = tip.offsetHeight;
+      tip.style.left = (mouse.x + 14 + tw > W ? Math.max(0, mouse.x - 14 - tw) : mouse.x + 14) + 'px';
+      tip.style.top = Math.max(0, Math.min(height - th, mouse.y - th / 2)) + 'px';
+    } else tip.style.display = 'none';
+  }
+  const api = {
+    setRange(na, nb) { a = na; b = nb > na ? nb : na + 1; drawBase(); drawOver(); },
+    cursor,
+    resize() { size(); drawBase(); drawOver(); },
+    destroy() {},
+  };
+  const pos = e => { const r = over.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  over.addEventListener('mousemove', e => {
+    mouse = pos(e);
+    if (drag) drag.x1 = Math.max(PL, Math.min(W - PR, mouse.x));
+    syncCursor(mouse.x >= PL && mouse.x <= W - PR ? T(mouse.x) : null, api);
+  });
+  over.addEventListener('mouseleave', () => { mouse = null; syncCursor(null, api); });
+  over.addEventListener('mousedown', e => { if (e.button) return; const p = pos(e); drag = { x0: p.x, x1: p.x }; e.preventDefault(); });
+  const up = () => {
+    if (!drag) return;
+    const d = drag; drag = null;
+    if (Math.abs(d.x1 - d.x0) > 4) setRange([T(Math.min(d.x0, d.x1)), T(Math.max(d.x0, d.x1))]);
+    else drawOver();
+  };
+  window.addEventListener('mouseup', up);
+  api.destroy = () => window.removeEventListener('mouseup', up);
+  over.addEventListener('dblclick', () => setRange(null));
+  body._onResize = w => { if (w > 0 && w !== W) api.resize(); };
+  ro.observe(body);
+  const [ra, rb] = curRange();
+  a = ra; b = rb > ra ? rb : ra + 1;
+  size(); drawBase(); drawOver();
+  return api;
+}
+
+function heatCard(container, def) {
+  if (!def.rows.length) return;
+  const card = el('section', 'card wide');
+  card.append(el('div', 'hd', `<h3>${esc(def.title)}</h3><span class="unit">${esc(def.unit || '')}</span>`));
+  const wrap = el('div', 'heat');
+  const cv = el('canvas');
+  const tip = el('div', 'tip');
+  wrap.append(cv, tip);
+  const C = colors();
+  const scale = el('div', 'scale', `<span>0%</span><i style="background:linear-gradient(90deg,${C.heat.join(',')})"></i><span>100%</span><span style="margin-left:8px">hover for values · drag a line chart to zoom</span>`);
+  card.append(wrap, scale);
+  container.append(card);
+  const rows = def.rows, L = 34, R = 8, AX = 20;
+  const rowH = Math.max(3, Math.min(12, Math.floor(300 / rows.length)));
+  const meds = rows.map(r => medInterval(r.t));
+  const rgb = C.heat.map(h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)));
+  const ramp = x => {
+    x = Math.max(0, Math.min(1, x)) * (rgb.length - 1);
+    const i = Math.min(rgb.length - 2, Math.floor(x)), f = x - i;
+    return `rgb(${rgb[i].map((c, k) => Math.round(c + (rgb[i + 1][k] - c) * f)).join(',')})`;
+  };
+  let W = 0;
+  const draw = () => {
+    W = wrap.clientWidth; if (!W) return;
+    const Hh = rows.length * rowH + AX, dpr = window.devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = Hh * dpr; cv.style.width = W + 'px'; cv.style.height = Hh + 'px';
+    const g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, W, Hh);
+    const [a, b] = curRange(), pw = W - L - R;
+    const X = t => L + (t - a) / (b - a) * pw;
+    g.font = '10px system-ui, sans-serif'; g.fillStyle = C.muted; g.textBaseline = 'middle'; g.textAlign = 'right';
+    const every = Math.ceil(11 / rowH);
+    rows.forEach((r, ri) => {
+      const y = ri * rowH, med = meds[ri];
+      if (ri % every === 0) { g.fillStyle = C.muted; g.fillText(r.label, L - 6, y + rowH / 2); }
+      for (let i = 0; i < r.t.length; i++) {
+        const t1 = r.t[i];
+        let t0 = i ? r.t[i - 1] : t1 - med;
+        if (t1 - t0 > med * 3) t0 = t1 - med;
+        if (t1 < a || t0 > b) continue;
+        const x0 = Math.max(L, X(t0)), x1 = Math.min(W - R, X(t1));
+        g.fillStyle = ramp(r.v[i] / 100);
+        g.fillRect(x0, y, Math.max(1, x1 - x0 + 0.5), rowH >= 5 ? rowH - 1 : rowH);
+      }
+    });
+    g.textAlign = 'center'; g.textBaseline = 'top'; g.fillStyle = C.muted;
+    const span = b - a, n = Math.max(2, Math.floor(pw / 110));
+    for (let k = 0; k <= n; k++) {
+      const t = a + span * k / n, s = fmtTime(t);
+      g.fillText(span > 3 * 86400 ? s.slice(5, 10) : span > 86400 ? s.slice(5, 16) : s.slice(11, 16), Math.min(W - 24, Math.max(L + 14, X(t))), rows.length * rowH + 5);
+    }
+  };
+  cv.addEventListener('mousemove', e => {
+    const rect = cv.getBoundingClientRect(), x = e.clientX - rect.left, y = e.clientY - rect.top;
+    const ri = Math.floor(y / rowH), [a, b] = curRange();
+    if (ri < 0 || ri >= rows.length || x < L || x > W - R) { tip.style.display = 'none'; return; }
+    const t = a + (x - L) / (W - L - R) * (b - a), r = rows[ri];
+    let lo = 0, hi = r.t.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (r.t[mid] < t) lo = mid + 1; else hi = mid; }
+    if (!r.t.length || r.t[lo] < t || r.t[lo] - t > meds[ri] * 1.5) { tip.style.display = 'none'; return; }
+    tip.innerHTML = `CPU ${esc(r.label)} · ${fmtTime(r.t[lo])}<br><b>${fmtNum(r.v[lo])}%</b> busy`;
+    tip.style.display = 'block';
+    tip.style.left = Math.min(x + 12, W - tip.offsetWidth - 4) + 'px';
+    tip.style.top = (y + 14) + 'px';
+  });
+  cv.addEventListener('mouseleave', () => tip.style.display = 'none');
+  cv.addEventListener('dblclick', () => setRange(null));
+  wrap._onResize = w => { if (w !== W) draw(); };
+  ro.observe(wrap);
+  heats.push({ draw });
+  draw();
+}
+
+function setRange(r) {
+  range = r;
+  const [a, b] = curRange();
+  plots.forEach(p => p.setRange(a, b));
+  heats.forEach(h => h.draw());
+  const ds = $('#daySel');
+  ds.value = !r ? 'all' : (b - a === 86400 && [...ds.options].some(o => o.value === String(a))) ? String(a) : 'custom';
+  $('#daySel option[value=custom]').hidden = ds.value !== 'custom';
+  if (view === 'dash') updateTiles(); else renderExpStats();
+}
+
+function clearCharts() {
+  plots.forEach(p => p.destroy());
+  plots = []; heats = [];
+  ro.disconnect();
+}
+
+/* ---------------- dashboard ---------------- */
+function dashDefs(h) {
+  const D = [];
+  const S = p => sec(h, p);
+  const GiB = x => x / 1048576, MB = x => x / 1024;
+  const cpu = S(c => c[0] === 'CPU' && (c.includes('%usr') || c.includes('%user')));
+  if (cpu && cpu.inst.get('all')) {
+    const all = cpu.inst.get('all');
+    D.push({ title: 'CPU utilization, all CPUs', unit: '%', y: 'pct', series: ['%usr', '%user', '%sys', '%system', '%iowait', '%steal', '%irq', '%soft', '%nice'].filter(n => cpu.vcols.includes(n)).slice(0, 8).map(n => ser(cpu, all, n)) });
+  }
+  const ld = S(c => c.includes('ldavg-1'));
+  if (ld) {
+    const s = ld.inst.get('');
+    D.push({ title: `Load average & run queue (${h.cpus} CPUs)`, unit: 'tasks', y: 'zero', series: ['ldavg-1', 'ldavg-5', 'ldavg-15', 'runq-sz', 'blocked'].map(n => ser(ld, s, n)) });
+  }
+  if (cpu) {
+    const ci = cpu.vcols.indexOf('%idle');
+    const cores = [...cpu.inst.keys()].filter(k => k !== 'all').sort(natural);
+    if (ci >= 0 && cores.length) D.push({ type: 'heat', title: 'CPU busy per core (100 − %idle)', unit: '%', rows: cores.map(k => { const s = cpu.inst.get(k); return { label: k, t: s.t, v: s.v[ci].map(x => 100 - x) }; }) });
+  }
+  const mem = S(c => c.includes('kbmemfree')), swp = S(c => c.includes('kbswpfree'));
+  if (mem) {
+    const s = mem.inst.get('');
+    D.push({ title: 'Memory & swap utilization', unit: '%', y: 'pct', series: [ser(mem, s, '%memused'), ser(mem, s, '%commit'), swp && ser(swp, swp.inst.get(''), '%swpused')] });
+    D.push({ title: 'Memory breakdown', unit: 'GiB', y: 'zero', series: [ser(mem, s, 'kbmemused', 'used', GiB), ser(mem, s, 'kbavail', 'available', GiB), ser(mem, s, 'kbcached', 'cached', GiB), ser(mem, s, 'kbbuffers', 'buffers', GiB), ser(mem, s, 'kbslab', 'slab', GiB), ser(mem, s, 'kbcommit', 'committed', GiB)] });
+  }
+  const dev = S(c => c[0] === 'DEV' && c.includes('%util'));
+  if (dev) {
+    D.push({ title: 'Disk utilization, top 8 devices by peak', unit: '%util', y: 'pct', series: topInst(dev, '%util', 8).map(k => ser(dev, dev.inst.get(k), '%util', k)) });
+    const rc = dev.vcols.includes('rkB/s') ? ['rkB/s', 'wkB/s'] : ['rd_sec/s', 'wr_sec/s'];
+    const f = rc[0] === 'rkB/s' ? MB : x => x / 2048;
+    const ranked = [...dev.inst.keys()].map(k => [k, sumSer(dev, dev.inst.get(k), rc, k, f)]).filter(x => x[1])
+      .map(([k, s]) => [k, s, s.v.reduce((a, b) => a + b, 0)]).filter(x => x[2] > 0).sort((a, b) => b[2] - a[2]).slice(0, 8);
+    D.push({ title: 'Disk throughput (read + write), top 8 devices', unit: 'MB/s', y: 'zero', series: ranked.map(x => x[1]) });
+    if (dev.vcols.includes('await')) D.push({ title: 'Disk await, top 8 devices by peak', unit: 'ms', y: 'zero', series: topInst(dev, 'await', 8).map(k => ser(dev, dev.inst.get(k), 'await', k)) });
+  }
+  const net = S(c => c[0] === 'IFACE' && c.includes('rxkB/s'));
+  if (net) {
+    D.push({ title: 'Network receive, top interfaces', unit: 'MB/s', y: 'zero', series: topInst(net, 'rxkB/s', 8, 'mean').map(k => ser(net, net.inst.get(k), 'rxkB/s', k, MB)) });
+    D.push({ title: 'Network transmit, top interfaces', unit: 'MB/s', y: 'zero', series: topInst(net, 'txkB/s', 8, 'mean').map(k => ser(net, net.inst.get(k), 'txkB/s', k, MB)) });
+  }
+  const pr = S(c => c.includes('cswch/s'));
+  if (pr) D.push({ title: 'Context switches', unit: 'per second', y: 'zero', series: [ser(pr, pr.inst.get(''), 'cswch/s')] });
+  const pg = S(c => c.includes('pgpgin/s'));
+  if (pg) D.push({ title: 'Paging pressure', unit: 'pages/s', y: 'zero', series: ['majflt/s', 'pgscank/s', 'pgscand/s', 'pgsteal/s'].map(n => ser(pg, pg.inst.get(''), n)) });
+  const io = S(c => c[0] === 'tps');
+  if (io) D.push({ title: 'I/O requests', unit: 'per second', y: 'zero', series: ['tps', 'rtps', 'wtps', 'dtps'].map(n => ser(io, io.inst.get(''), n)) });
+  const sk = S(c => c.includes('totsck'));
+  if (sk) D.push({ title: 'Sockets', unit: 'count', y: 'zero', series: ['totsck', 'tcpsck', 'udpsck', 'tcp-tw'].map(n => ser(sk, sk.inst.get(''), n)) });
+  const ne = S(c => c[0] === 'IFACE' && c.includes('rxerr/s'));
+  if (ne) {
+    const es = [];
+    for (const k of [...ne.inst.keys()].sort(natural)) for (const c of ['rxerr/s', 'txerr/s', 'rxdrop/s', 'txdrop/s']) {
+      const s = ser(ne, ne.inst.get(k), c, `${k} ${c.replace('/s', '')}`);
+      if (s && s.v.some(x => x > 0)) es.push([s, s.v.reduce((a, b) => a + b, 0)]);
+    }
+    if (es.length) D.push({ title: 'Network errors & drops', unit: 'per second', y: 'zero', series: es.sort((a, b) => b[1] - a[1]).slice(0, 8).map(x => x[0]) });
+  }
+  return D;
+}
+
+function updateTiles() {
+  const box = $('#tiles');
+  if (!box || !H) return;
+  const [a, b] = curRange();
+  const T = [];
+  const cpu = sec(H, c => c[0] === 'CPU' && c.includes('%idle'));
+  const all = cpu && cpu.inst.get('all');
+  if (all) {
+    const ci = cpu.vcols.indexOf('%idle');
+    const st = stats(all.t, all.v[ci].map(x => 100 - x), a, b);
+    if (st) { T.push(['Average CPU busy', fmtNum(st.avg) + '%', `p95 ${fmtNum(st.p95)}%`]); T.push(['Peak CPU busy', fmtNum(st.max) + '%', fmtTime(st.tmax)]); }
+  }
+  const ld = sec(H, c => c.includes('ldavg-1'));
+  if (ld) {
+    const s = ld.inst.get(''), st = s && stats(s.t, s.v[ld.vcols.indexOf('ldavg-1')], a, b);
+    if (st) T.push(['Peak load (1 min)', fmtNum(st.max), `${Math.round(st.max / H.cpus * 100)}% of ${H.cpus} CPUs · ${fmtTime(st.tmax).slice(5, 16)}`]);
+  }
+  const mem = sec(H, c => c.includes('%memused'));
+  if (mem) {
+    const s = mem.inst.get(''), st = s && stats(s.t, s.v[mem.vcols.indexOf('%memused')], a, b);
+    if (st) T.push(['Peak memory used', fmtNum(st.max) + '%', `avg ${fmtNum(st.avg)}%`]);
+  }
+  const dev = sec(H, c => c[0] === 'DEV' && c.includes('%util'));
+  if (dev) {
+    const ci = dev.vcols.indexOf('%util');
+    let best = null;
+    for (const [k, s] of dev.inst) { const st = stats(s.t, s.v[ci], a, b); if (st && (!best || st.max > best.max)) best = { ...st, k }; }
+    if (best) T.push(['Busiest disk peak', fmtNum(best.max) + '%', `${best.k} · ${fmtTime(best.tmax).slice(5, 16)}`]);
+  }
+  const net = sec(H, c => c[0] === 'IFACE' && c.includes('rxkB/s'));
+  if (net) {
+    let best = null;
+    for (const [k, s] of net.inst) {
+      const ss = sumSer(net, s, ['rxkB/s', 'txkB/s'], k, x => x / 1024);
+      const st = ss && stats(ss.t, ss.v, a, b);
+      if (st && (!best || st.max > best.max)) best = { ...st, k };
+    }
+    if (best) T.push(['Peak network (rx+tx)', fmtNum(best.max) + ' MB/s', `${best.k} · ${fmtTime(best.tmax).slice(5, 16)}`]);
+  }
+  const rs = H.restarts.filter(t => t >= a && t <= b);
+  T.push(['Reboots in range', String(rs.length), rs.length ? rs.slice(0, 2).map(fmtTime).join(', ') : `${fmtTime(a).slice(0, 16)} → ${fmtTime(b).slice(0, 16)}`]);
+  box.innerHTML = T.map(([k, v, s]) => `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="s">${esc(s)}</div></div>`).join('');
+}
+
+function renderDash() {
+  const root = $('#dash');
+  root.innerHTML = '';
+  root.append(el('div', 'tiles', null));
+  root.lastChild.id = 'tiles';
+  const grid = el('div', 'grid');
+  root.append(grid);
+  for (const d of dashDefs(H)) d.type === 'heat' ? heatCard(grid, d) : plotCard(grid, d);
+  root.append(el('p', 'note', 'Drag across any chart to zoom all charts · double-click to reset · hover to see values in the legend.'));
+  updateTiles();
+}
+
+/* ---------------- explorer ---------------- */
+let expPlot = null;
+function renderExp() {
+  const root = $('#exp');
+  root.innerHTML = '';
+  const secs = Object.values(H.sections).filter(s => s.inst.size).sort((a, b) => a.name.localeCompare(b.name));
+  if (!secs.find(s => s.sig === exp.sig)) { exp.sig = (secs.find(s => s.name === 'CPU utilization') || secs[0]).sig; exp.col = null; exp.sel.clear(); }
+  const S = H.sections[exp.sig];
+  if (!S.vcols.includes(exp.col)) exp.col = S.vcols[0];
+  const keys = [...S.inst.keys()].sort(natural);
+  if (!exp.sel.size || [...exp.sel].some(k => !S.inst.has(k))) {
+    exp.sel = new Set(S.keyed ? (S.inst.has('all') ? ['all'] : topInst(S, exp.col, 5, 'mean')) : ['']);
+    if (!exp.sel.size && keys.length) exp.sel.add(keys[0]);
+  }
+  const wrap = el('div', 'explorer');
+  const panel = el('div', 'panel');
+  panel.innerHTML = `<label>Section</label><select id="eSec">${secs.map(s => `<option value="${esc(s.sig)}">${esc(s.name)}</option>`).join('')}</select>
+    <label>Metric</label><select id="eCol">${S.vcols.map(c => `<option>${esc(c)}</option>`).join('')}</select>`;
+  if (S.keyed) {
+    panel.insertAdjacentHTML('beforeend', `<label>${esc(S.keyName)} (max 8)</label><input id="eFilt" type="text" placeholder="Filter…" value="${esc(exp.filter)}">
+      <div class="row"><button id="eTop">Top 8 by peak</button><button id="eAvg">Top 8 by avg</button><button id="eNone">Clear</button></div><div class="insts" id="eList"></div>`);
+  }
+  const main = el('div');
+  const chartBox = el('div');
+  const statBox = el('div', 'card');
+  statBox.id = 'eStats';
+  main.append(chartBox, statBox);
+  wrap.append(panel, main);
+  root.append(wrap);
+  $('#eSec').value = exp.sig;
+  $('#eCol').value = exp.col;
+  $('#eSec').onchange = e => { exp.sig = e.target.value; exp.col = null; exp.sel.clear(); exp.filter = ''; rerender(); };
+  $('#eCol').onchange = e => { exp.col = e.target.value; drawExp(chartBox); };
+  if (S.keyed) {
+    const list = $('#eList');
+    const fillList = () => {
+      const f = exp.filter.toLowerCase(), full = exp.sel.size >= 8;
+      list.innerHTML = keys.filter(k => !f || k.toLowerCase().includes(f) || exp.sel.has(k)).map(k => {
+        const on = exp.sel.has(k), dis = !on && full;
+        return `<label class="${dis ? 'dis' : ''}"><input type="checkbox" value="${esc(k)}" ${on ? 'checked' : ''} ${dis ? 'disabled' : ''}>${esc(k)}</label>`;
+      }).join('');
+    };
+    fillList();
+    list.onchange = e => { const k = e.target.value; e.target.checked ? exp.sel.add(k) : exp.sel.delete(k); fillList(); drawExp(chartBox); };
+    $('#eFilt').oninput = e => { exp.filter = e.target.value; fillList(); };
+    const top = by => { exp.sel = new Set(topInst(S, exp.col, 8, by)); fillList(); drawExp(chartBox); };
+    $('#eTop').onclick = () => top('max');
+    $('#eAvg').onclick = () => top('mean');
+    $('#eNone').onclick = () => { exp.sel.clear(); fillList(); drawExp(chartBox); };
+  }
+  drawExp(chartBox);
+}
+
+function drawExp(box) {
+  clearCharts();
+  box.innerHTML = '';
+  const S = H.sections[exp.sig];
+  const keys = [...exp.sel].sort(natural);
+  const series = keys.map(k => ser(S, S.inst.get(k), exp.col, S.keyed ? k : exp.col)).filter(Boolean);
+  if (!series.length) { box.append(el('div', 'card', '<p class="note">Select at least one instance.</p>')); expPlot = null; renderExpStats(); return; }
+  const isPct = exp.col.startsWith('%');
+  expPlot = plotCard(box, { title: `${S.name}: ${exp.col}`, unit: S.keyed ? `${keys.length} ${S.keyName.toLowerCase()}${keys.length > 1 ? 's' : ''}` : '', y: isPct ? 'pct' : 'zero', height: 380, series });
+  renderExpStats();
+}
+
+function renderExpStats() {
+  const box = $('#eStats');
+  if (!box) return;
+  if (!expPlot) { box.innerHTML = ''; return; }
+  const [a, b] = curRange(), C = colors();
+  const rows = expPlot.list.map((s, i) => {
+    const st = stats(s.t, s.v, a, b);
+    return `<tr><td><span class="sw" style="background:${C.series[i % 8]}"></span>${esc(s.label)}</td>` +
+      (st ? `<td>${fmtNum(st.min)}</td><td>${fmtNum(st.avg)}</td><td>${fmtNum(st.p95)}</td><td>${fmtNum(st.max)}</td><td>${fmtTime(st.tmax)}</td>` : '<td colspan="5">no data in range</td>') + '</tr>';
+  }).join('');
+  box.innerHTML = `<div class="hd"><h3>Statistics for visible range</h3><span class="unit">${fmtTime(a).slice(0, 16)} → ${fmtTime(b).slice(0, 16)}</span></div>
+    <div style="overflow-x:auto"><table class="stats"><tr><th>Series</th><th>Min</th><th>Avg</th><th>p95</th><th>Max</th><th>Max at</th></tr>${rows}</table></div>`;
+}
+
+/* ---------------- app shell ---------------- */
+function rerender() {
+  clearCharts();
+  $('#dash').classList.toggle('hidden', view !== 'dash');
+  $('#exp').classList.toggle('hidden', view !== 'exp');
+  if (!H) return;
+  if (view === 'dash') renderDash(); else renderExp();
+}
+
+function populate() {
+  const hosts = Object.keys(STORE.hosts).sort();
+  const has = hosts.length > 0;
+  document.querySelectorAll('.needs-data').forEach(e => e.classList.toggle('hidden', !has));
+  $('#drop').classList.toggle('hidden', has);
+  if (!has) { H = null; $('#status').textContent = ''; rerender(); return; }
+  if (!H || !STORE.hosts[H.host]) H = STORE.hosts[hosts[0]];
+  $('#hostSel').innerHTML = hosts.map(h => `<option>${esc(h)}</option>`).join('');
+  $('#hostSel').value = H.host;
+  $('#hostSel').classList.toggle('hidden', hosts.length < 2);
+  const days = [...H.days].sort((a, b) => a - b);
+  $('#daySel').innerHTML = `<option value="all">All days (${days.length})</option>` + days.map(d => `<option value="${d}">${fmtDay(d)}</option>`).join('') + '<option value="custom" hidden>Custom zoom</option>';
+  $('#status').textContent = `${H.host} · ${H.kernel} · ${H.cpus} CPUs · ${fmtDay(H.tmin)} → ${fmtDay(H.tmax)}`;
+  range = null;
+  rerender();
+  setRange(null);
+}
+
+async function loadFiles(fileList) {
+  const files = [...fileList].filter(f => f.size > 0).sort((a, b) => a.name.localeCompare(b.name));
+  if (!files.length) return;
+  let ok = 0, skipped = [];
+  for (let i = 0; i < files.length; i++) {
+    $('#status').textContent = `Parsing ${i + 1}/${files.length}: ${files[i].name}`;
+    const head = await files[i].slice(0, 6).text();
+    if (!head.startsWith('Linux')) { skipped.push(files[i].name); continue; }
+    const text = await files[i].text();
+    if (parseText(text)) ok++; else skipped.push(files[i].name);
+    await new Promise(r => setTimeout(r));
+  }
+  finalize();
+  populate();
+  if (!ok) $('#status').textContent = `No sar text reports found (${skipped.length} files skipped).`;
+  else if (skipped.length) $('#status').textContent += ` · ${ok} loaded, ${skipped.length} non-text skipped`;
+  else $('#status').textContent += ` · ${ok} files`;
+}
+
+$('#btnFiles').onclick = () => $('#inFiles').click();
+$('#btnDir').onclick = () => $('#inDir').click();
+$('#inFiles').onchange = e => { loadFiles(e.target.files); e.target.value = ''; };
+$('#inDir').onchange = e => { loadFiles(e.target.files); e.target.value = ''; };
+$('#vDash').onclick = () => { view = 'dash'; $('#vDash').classList.add('on'); $('#vExp').classList.remove('on'); rerender(); };
+$('#vExp').onclick = () => { view = 'exp'; $('#vExp').classList.add('on'); $('#vDash').classList.remove('on'); rerender(); };
+$('#hostSel').onchange = e => { H = STORE.hosts[e.target.value]; exp.sig = null; populate(); };
+$('#daySel').onchange = e => { const v = e.target.value; if (v === 'all') setRange(null); else if (v !== 'custom') setRange([+v, +v + 86400]); };
+$('#btnReset').onclick = () => setRange(null);
+$('#btnClear').onclick = () => { STORE.hosts = {}; H = null; exp.sig = null; populate(); };
+
+const THEMES = ['auto', 'light', 'dark'];
+let theme = 'auto';
+function applyTheme() {
+  if (theme === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', theme);
+  $('#btnTheme').textContent = 'Theme: ' + theme;
+}
+applyTheme();
+$('#btnTheme').onclick = () => {
+  theme = THEMES[(THEMES.indexOf(theme) + 1) % 3];
+  applyTheme();
+  rerender();
+  if (H) setRange(range);
+};
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (theme === 'auto') { rerender(); if (H) setRange(range); } });
+
+let dragDepth = 0;
+addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; $('#drop').classList.add('over'); });
+addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('#drop').classList.remove('over'); } });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', e => { e.preventDefault(); dragDepth = 0; $('#drop').classList.remove('over'); loadFiles(e.dataTransfer.files); });
+</script>
+</body>
+</html>
